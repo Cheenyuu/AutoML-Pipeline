@@ -148,6 +148,7 @@ def preprocess(dataframe):
 def feature_selection(preprocessed_dataframe, y):
     from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
     continuous = test_continuous(y)
+    preprocessed_dataframe["random_noise"] = np.random.randn(len(preprocessed_dataframe))
     #[True, False, ..., True] for every feature, define whether or not it is discrete or not
     is_discrete = preprocessed_dataframe.dtypes == int
     if(continuous):
@@ -156,6 +157,26 @@ def feature_selection(preprocessed_dataframe, y):
         mi = mutual_info_classif(preprocessed_dataframe, y, discrete_features = is_discrete)
     mi = pd.Series(mi, index = preprocessed_dataframe.columns, name = "mutual_info")
     mi = mi.sort_values(ascending = False)
+
+    threshold = mi["random_noise"]
+    mi = mi[mi > threshold]
+
+    #get rid of the random noise column
+    preprocessed_dataframe.drop(columns = ["random_noise"], inplace = True)
+
+    #now I need to remove redundant features
+    #correlation matrices are immutable, so I need to make a copy
+    correlation_matrix = np.copy(preprocessed_dataframe.corr().abs())
+    np.fill_diagonal(correlation_matrix, 0)
+    print(correlation_matrix)
+
+    high_corr_features = {}
+    for i in range(len(correlation_matrix)):
+        for j in range(i, len(correlation_matrix)):
+            if correlation_matrix[i, j] > 0.7:
+                high_corr_features[i] = j
+    print(high_corr_features)
+
     return mi
 
 
@@ -180,7 +201,6 @@ def main():
     X = csv_data.copy()
     y = X.pop(target_column)
     preprocessed_dataframe = preprocess(X)
-    print(preprocessed_dataframe.columns)
-    #mi = feature_selection(processed_dataframe, y)
+    mi = feature_selection(preprocessed_dataframe, y)
     #print(mi)
 main()
