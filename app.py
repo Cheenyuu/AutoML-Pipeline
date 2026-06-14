@@ -157,43 +157,17 @@ def feature_selection(preprocessed_dataframe, y):
         mi = mutual_info_classif(preprocessed_dataframe, y, discrete_features = is_discrete)
     mi = pd.Series(mi, index = preprocessed_dataframe.columns, name = "mutual_info")
     mi = mi.sort_values(ascending = False)
-
     threshold = mi["random_noise"]
-    mi = mi[mi > threshold]
-
-    #get rid of the random noise column
-    preprocessed_dataframe.drop(columns = ["random_noise"], inplace = True)
-
-    #now I need to remove redundant features
-    #correlation matrices are immutable, so I need to make a copy
-    correlation_matrix = np.copy(preprocessed_dataframe.corr().abs())
-    np.fill_diagonal(correlation_matrix, 0)
-    print(correlation_matrix)
-
-    high_corr_features = {}
-    for i in range(len(correlation_matrix)):
-        for j in range(i, len(correlation_matrix)):
-            if correlation_matrix[i, j] > 0.7:
-                high_corr_features[i] = j
-    print(high_corr_features)
-
-    return mi
-
-
+    drop_features = mi[mi <= threshold].index.tolist()
+    preprocessed_dataframe.drop(columns = drop_features, inplace = True)
     
-    """
-    #now I need to do a correlation test to determine whether or not 
-    legend = {}
-    for feature in preprocessed_dataframe.columns:
-        corr_val = pearsonr(preprocessed_dataframe[feature], y)[0]
-        legend[feature] = abs(corr_val)
-    print(legend)
-    """
     return
 
 
 def modeling():
     return
+
+
 
 def main():    
     csv_data = load_data()
@@ -201,6 +175,12 @@ def main():
     X = csv_data.copy()
     y = X.pop(target_column)
     preprocessed_dataframe = preprocess(X)
-    mi = feature_selection(preprocessed_dataframe, y)
-    #print(mi)
+    number_of_features = preprocessed_dataframe.shape[1]
+    feature_selection(preprocessed_dataframe, y)
+    print(F"features: {preprocessed_dataframe.columns.tolist()}")
+    print(f"Removed {number_of_features - preprocessed_dataframe.shape[1]} features, kept {preprocessed_dataframe.shape[1]} features.")
+    #mi = feature_selection(preprocessed_dataframe, y)
+    #print(f"feature list: {mi}")
+    #number_of_selected_features = len(mi)
+    #print(f"Removed {number_of_features - number_of_selected_features} features, kept {number_of_selected_features} features.")
 main()
