@@ -73,7 +73,7 @@ Models are evaluated using 5-fold cross-validation to determine effectiveness of
 
 ## Project Structure
 
-'''text
+```text
 project/
 |
 |-- raw-data/
@@ -82,7 +82,7 @@ project/
 |-- app.py
 |
 └-- README.md
-'''
+```
 
 ## Installation
 
