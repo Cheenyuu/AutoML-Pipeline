@@ -81,6 +81,25 @@ def mixed_types(dataframe, feature):
     #if the ratio of numeric values is either 100% or 0%, then we can say that it is either continuous or categorical, respectively. Otherwise, we have a mixed type and we need to do some more work to determine which one it is.
     return numeric_count / total_count >= 1.0 or numeric_count / total_count <= 0.0
 
+# I need to define a usability function properly- it needs to check to see if there are any values that are unusuable in a categorical or continuous feature
+def usability(data, feature_name, type):
+
+    #if there is no real metadata, we can do nothing with the information realistically
+    if feature_name in GARBAGE_TOKENS:
+        return False;
+    
+    #high missingness...
+    missing_values = data[feature_name].isna().sum()
+    if missing_values / len(data) > .5:
+        return False
+
+    if type == 'continuous':
+                
+        return
+    else:
+        #categorical data
+        return
+
 def test_continuous(series):
     #first let's test if the values themselves are numeric
     try:
@@ -104,23 +123,6 @@ def test_continuous(series):
     if entropy(prob) < 1.0:
         return False
     return True
-
-
-# I need to define a usability function properly- it needs to check to see if there are any values that are unusuable in a categorical or continuous feature
-def usability(feature_name, type):
-
-    #if there is no real metadata, we can do nothing with the information realistically
-    if feature_name in GARBAGE_TOKENS:
-        return False;
-    
-    if type == 'continuous':
-        
-        
-        return
-    else:
-        #categorical data
-        return
-
 
 def preprocess(dataframe):
     #preprocessing
