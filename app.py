@@ -12,7 +12,7 @@ def LOAD_MANUAL_OVERRIDE():
 # GLOBAL VALUES
 GARBAGE_TOKENS = ['?', 'NA', 'N/A', 'null', 'None', 'nan', 'NaN', '']
 REMOVED_FEATURES = {}
-PREDEFINED_REMOVE_FLAGS = ['name', 'time', 'id']
+PREDEFINED_REMOVE_FLAGS = ['name', 'time', 'id', 'jersey']
 MANUAL_OVERRIDE_TOKENS = LOAD_MANUAL_OVERRIDE()
 #feature metadata idea
 METADATA = {}
@@ -245,6 +245,10 @@ def modeling(X, y, continuous):
 
 # I need to define a usability function properly- it needs to check to see if there are any values that are unusuable in a categorical or continuous feature
 def usability(data, feature_name):
+
+    if feature_name in MANUAL_OVERRIDE_TOKENS:
+        return True
+
     #if there is no real metadata, we can do nothing with the information realistically
     if feature_name in GARBAGE_TOKENS:
         REMOVED_FEATURES[feature_name] = "feature has data not correlated to label"
@@ -259,12 +263,8 @@ def usability(data, feature_name):
     #we don't want to use datetime or id for a learning model for now. whole different type of data that needs to be parsed in a new way
     for rfn in PREDEFINED_REMOVE_FLAGS:
         if rfn in feature_name and rfn not in MANUAL_OVERRIDE_TOKENS:
-            for override in MANUAL_OVERRIDE_TOKENS:
-                if override in feature_name:
-                    break
-                else:
-                    REMOVED_FEATURES[feature_name] = "feature is predetermined to be unreliable"
-                    return False
+            REMOVED_FEATURES[feature_name] = "feautre is predetermined to be unreliable"
+            return False
 
     total_entries = data[feature_name].notnull().sum()
     #no mixed types within the same column, too difficult to parse at this moment.
@@ -296,6 +296,37 @@ def initial_type_prediction(series):
         return 'continuous'
     return 'categorical'
 
+def encode_categorical(data, feature):
+    #in this function we need to be able to modify the categorical values to be readable to a machine learning algorithm.
+    #in order to do this, we just need to know the cardinality first
+    cardinality = data[feature].nunique()
+    if feature == 'preferred_foot':
+        print(cardinality)
+    if cardinality == 1:
+        #only one unique value, meaning there is likely no real important information to gain
+        data.drop(columns = feature, inplace = True)
+        REMOVED_FEATURES[feature] = 'cardinality of 1, no unique values'
+    elif cardinality == 2:
+        #binary encoding
+        data[feature], _ = data[feature].factorize()
+    elif cardinality > 2 and cardinality < 100:
+        #one-hot encoding
+        return pd.get_dummies(data, columns = [feature], dtype = int)
+    else:
+        #for very large values, we will use frequency encoding 
+        freq_map = data[feature].value_counts(normalize = True).to_dict()
+        data[feature] = data[feature].map(freq_map)
+    return data
+
+def continuous_data_normalization(data, feature):
+    data[feature] = pd.to_numeric(data[feature], errors = 'coerce')
+    skew = data[feature].skew()
+    if abs(skew) > 0.5:
+        data[feature] = data[feature].fillna(data[feature].median())
+    else:
+        data[feature] = data[feature].fillna(data[feature].mean())    
+    normalization(data, feature)
+
 #initially cleaning the data and categorizing the features based on their immediate declarations through defined metadata
 def initial_clean(data):
     for feature in data.columns:
@@ -312,27 +343,12 @@ def initial_clean(data):
         if initial_type_prediction(data[feature]) == 'continuous':
             #continuous
             METADATA[feature] = "continuous"
+            continuous_data_normalization(data, feature)
         else:
             #categorical
             METADATA[feature] = "categorical"
-    return
-
-def initial_continuous_preprocessing(data, feature):
-    data[feature] = pd.to_numeric(data[feature], errors = 'coerce')
-    skew = data[feature].skew()
-    if abs(skew) > 0.5:
-        data[feature] = data[feature].fillna(data[feature].median())
-    else:
-        data[feature] = data[feature].fillna(data[feature].mean())    
-    normalization(data, feature)
-
-def preprocess_proto(data):
-    for feature in data.columns:
-        if METADATA[feature] == 'continuous':
-            initial_continuous_preprocessing(data, feature)
-        else:
-            continue
-    return
+            data = encode_categorical(data, feature)
+    return data
 
 #predefined print for removed data- properly formatted
 def print_removed():
@@ -353,7 +369,6 @@ def main():
     target_column = "performance_score"
     X = csv_data.copy()
 
-
     #get rid of all nan values
     X[target_column] = X[target_column].astype(str).str.strip()
     X[target_column] = X[target_column].replace(GARBAGE_TOKENS, np.nan)
@@ -362,9 +377,10 @@ def main():
 
     y = X.pop(target_column)
 
-    initial_clean(X)
+    X = initial_clean(X)
 
-    preprocess_proto(X)
+    print(X)
+    print(X.columns)
 
     """
     #I need to preprocess some of the data separately for the target column
