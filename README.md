@@ -83,8 +83,6 @@ If dataset complexity is high:
 
 ## Project Structure
 
-## Project Structure
-
 ```text
 project/
 |
