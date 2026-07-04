@@ -1,0 +1,6 @@
+offsides
+total_assists_tournament
+total_minutes_tournament
+total_goals_tournament
+tournament_rating
+club_name
