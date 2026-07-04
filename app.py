@@ -50,6 +50,7 @@ class feature_metadata:
         self.name = feature_name
         self.type = None
         self.description = None
+        self.key = None
 
     def show_metadata(self):
         print("[]------------------------------------------------[]")
@@ -156,6 +157,7 @@ def test_chi_square(X, feature_name):
 
 #if there is a high MI value for a single feature, we want to keep it.
 def MI_categorization(X, y, type):
+    time.sleep(1)
     broadcast_message("Running mutual information test...")
     print("Running mutual information test...")
     X["random_noise"] = np.random.randn(len(X))
@@ -177,8 +179,10 @@ def fast_selection(X, y, type):
 
     good_features = MI_categorization(X, y, type)
 
-    for feature in broadcast_tqdm(X.columns, desc = "fast selection"):
-        time.sleep(.1)
+    time.sleep(1)
+    broadcast_message("Running feature evaluation")
+
+    for feature in X.columns:
         if feature in good_features:
             continue
 
@@ -464,7 +468,7 @@ def fit():
     #initial run with initial cross-validation score
     best_model, model_type, model_name, score = modeling(X, y, target_type)
     time.sleep(1)
-    broadcast_message(f"\nType: {model_type} | Mode; Name: {model_name} | score: {score}\n")
+    broadcast_message(f"\nType: {model_type} | Model Name: {model_name} | score: {score}\n")
     
     #feature selection
     
@@ -478,12 +482,12 @@ def fit():
         print(f"Number of features before selection: {len(X.columns)}")
         fast_selection(temp_dataset, y, target_type)
         time.sleep(1)
-        broadcast_message(f"Number of feature after selection: {len(X.columns)}")
+        broadcast_message(f"Number of feature after selection: {len(temp_dataset.columns)}")
         print((f"Number of feature after selection: {len(temp_dataset.columns)}"))
         aftr = len(temp_dataset.columns)
         new_model, new_model_type, new_model_name, new_score = modeling(temp_dataset, y, target_type)
         time.sleep(1)
-        broadcast_message(f"\nType: {new_model_type} | Mode; Name: {new_model_name} | score: {new_score}\n")
+        broadcast_message(f"\nType: {new_model_type} | Model Name: {new_model_name} | score: {new_score}\n")
         time.sleep(1)
         broadcast_message("Comparing performance metrics...")
         #scoring based on number removed and improvement or lack of improvement
@@ -497,6 +501,12 @@ def fit():
             broadcast_message("evaluation successful, new parameters set")
             X = temp_dataset
             best_model = new_model
+            model_type = new_model_type
+            model_name = new_model_name
+            score = new_score
+
+        time.sleep(1)
+        broadcast_message(f"\nFinal model | Type: {model_type} | Model Name: {model_name} | score: {score}\n")
 
 class UploadFileForm(FlaskForm):
     file = FileField("File")
