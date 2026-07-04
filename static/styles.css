@@ -3,6 +3,9 @@ body{
 }
 
 .terminal{
+    border: gray;
+    border-width: 30px;
+    border-radius: 10px;
     background:#111;
     color:lightgray;
     font-family:monospace;

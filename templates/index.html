@@ -1,6 +1,8 @@
 <!DOCTYPE html>
+<html>
 <head>
     <link rel = "stylesheet" href = "{{url_for('static', filename = 'styles.css')}}">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js" integrity="sha512-q/dWJ3kcmjBLU4Qc47E4A9kTB4m3wuTY7vkFJDTZKjTs8jhyGQnaUrxa0Ytd0ssMZhbNua9hE+E7Qv1j+DyZwA==" crossorigin="anonymous"></script>
 </head>
 <body>
     <form method = 'POST' enctype="multipart/form-data">
@@ -12,9 +14,20 @@
         {{string_output}}
     </p>
     <div class = "terminal">
-        Hello world!
+        Upload your .csv file to get started!
+        <ul id = "messages"></ul>
     </div>
+    <script>
+        socket = io();
+        socket.on('server_message', function(payload){
+            console.log("TESTING TESTING TESTING")
+            const li = document.createElement('li');
+            li.textContent = payload.data;
+            document.getElementById('messages').appendChild(li)
 
-    <script src = "https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-    <script src = "{{ url_for('static', filename='script.js' )  }}"></script>
+            const terminalDiv = document.querySelector(".terminal");
+            terminalDiv.scrollTop = terminalDiv.scrollHeight;
+        });
+    </script>
 </body>
+</html>

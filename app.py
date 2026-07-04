@@ -1,12 +1,42 @@
+import eventlet
+eventlet.monkey_patch()
+
+#MAKING IT A WEBAPP
+
+from flask import Flask, render_template
+from flask_wtf import FlaskForm
+from wtforms import FileField, SubmitField
+from werkzeug.utils import secure_filename
+from pathlib import Path
+from flask_socketio import SocketIO
+import os
+import time
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'supersecretkey'
+app.config['UPLOAD_FILE'] = 'raw_data'
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+
 import pandas as pd
 import os
 import numpy as np
-
 from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
 from scipy.stats import pearsonr
 from scipy.stats import chi2_contingency
 from tqdm import tqdm
 
+def broadcast_message(text):
+    text = "chenyu@chenyuzheng: " + text
+    socketio.emit('server_message', {'data':text})
+
+class broadcast_tqdm(tqdm):
+    def display(self, msg = None, pos = None):
+        super().display(msg, pos)
+        pct = (self.n / self.total) * 100 if self.total else 0
+        broadcast_message(f"{pct:.0f}% completed")
+
+        
 #I need to be able to tell the user what kind of inputs to enter...
 class artifact:
     def __init__(self):
@@ -40,30 +70,6 @@ MANUAL_OVERRIDE_TOKENS = LOAD_MANUAL_OVERRIDE()
 #feature metadata idea
 METADATA = {}
 
-class PipeLineState:
-    def __init__(self):
-        self.stage = ""
-        self.progress = 0
-        self.logs = []
-
-        self.current_model = ""
-        self.best_model = ""
-        self.score = ""
-
-        self.fold = 0
-        self.total_folds = 5
-
-state = PipeLineState()
-
-def log(message):
-    print(message)
-    state.logs.append(message)
-
-def set_stage(stage):
-    state.stage = stage
-
-def set_percent(percent):
-    state.progress = percent
 
 #-------------------------------------------- BACKEND --------------------------------------#
 
@@ -150,6 +156,7 @@ def test_chi_square(X, feature_name):
 
 #if there is a high MI value for a single feature, we want to keep it.
 def MI_categorization(X, y, type):
+    broadcast_message("Running mutual information test...")
     print("Running mutual information test...")
     X["random_noise"] = np.random.randn(len(X))
     is_discrete = X.dtypes == int
@@ -170,7 +177,8 @@ def fast_selection(X, y, type):
 
     good_features = MI_categorization(X, y, type)
 
-    for feature in X.columns:
+    for feature in broadcast_tqdm(X.columns, desc = "fast selection"):
+        time.sleep(.1)
         if feature in good_features:
             continue
 
@@ -194,10 +202,8 @@ def evaulation(models, X, y, type):
     best_name = None
     best_score = -np.inf
 
-    for name, model, in tqdm(models.items(), desc = "Evaluating Models"):
-        
-        state.current_model = name
-        log(f"Training {name}")
+    for name, model, in broadcast_tqdm(models.items(), desc = "Evaluating Models"):
+        time.sleep(.1)
 
         if type == "categorical":
             results = cross_validate(
@@ -211,9 +217,12 @@ def evaulation(models, X, y, type):
             accuracy = results["test_accuracy"].mean()
             f1 = results["test_f1"].mean()
 
-            print(f"\n{name}")
-            print(f"Accuracy:{accuracy:.4f}")
-            print(f"F1 Score: {f1:.4f}\n")
+            time.sleep(1)
+            broadcast_message(f"\n{name}")
+            time.sleep(1)
+            broadcast_message(f"Accuracy:{accuracy:.4f}")
+            time.sleep(1)
+            broadcast_message(f"F1 Score: {f1:.4f}\n")
 
             score = f1
         else:
@@ -229,9 +238,12 @@ def evaulation(models, X, y, type):
             r2 = results["test_r2"].mean()
             mse = -results["test_neg_mean_squared_error"].mean()
 
-            print(f"\n{name}")
-            print(f"R^2: {r2:.4f}")
-            print(f"MSE: {mse:.4f}\n")
+            time.sleep(1)
+            broadcast_message(f"\n{name}")
+            time.sleep(1)
+            broadcast_message(f"R^2: {r2:.4f}")
+            time.sleep(1)
+            broadcast_message(f"MSE: {mse:.4f}\n")
 
             score = r2
         
@@ -373,10 +385,11 @@ def continuous_data_normalization(data, feature):
 
 #initially cleaning the data and categorizing the features based on their immediate declarations through defined metadata
 def initial_clean(data):
-    set_stage("Cleaning")
+    count = 0
+    total = len(data.columns)
 
-    for feature in tqdm(data.columns, desc = "Cleaning Data"):
-        log(f"Cleaning {feature}...")
+    for feature in broadcast_tqdm(data.columns, desc = "Cleaning Data"):
+        time.sleep(.1)
         #get rid of garbage tokens, replace with nan values if they exist
         data[feature] = data[feature].astype(str).str.strip()
         data[feature] = data[feature].replace(GARBAGE_TOKENS, np.nan)
@@ -399,6 +412,7 @@ def initial_clean(data):
             METADATA[feature].type = "categorical"
             data = encode_categorical(data, feature)
         #METADATA[feature].show_metadata()
+        count += 1
     return data
 
 #predefined print for removed data- properly formatted
@@ -416,11 +430,8 @@ def print_metadata():
     print("==========================================")
 
 def fit():  
-
-    #load dataset
-    socketio.emit("log", "Loading data", broadcoast = True)
-    socketio.sleep(0.1)  
-    """csv_data = load_data()
+    #load dataset 
+    csv_data = load_data()
     target_column = "performance_score"
     X = csv_data.copy()
     #get rid of all nan values
@@ -429,8 +440,10 @@ def fit():
     X.dropna(subset = [target_column])
     y = X.pop(target_column)
 
+    time.sleep(1)
+    broadcast_message("Data Uploaded- Cleaning...")
+
     #cleaning
-    socketio.emit("log", "Cleaning data...")
     X = initial_clean(X)
     p = X.shape[1]
     n = X.shape[0]
@@ -439,94 +452,69 @@ def fit():
     high_dimensionality = (p > 300) or (ratio > .01)
     if high_dimensionality:
         print("[][][]WARNING: Relatively high computational cost detected, processing time expected to be increased")
-        socketio.emit("log", "[][][]WARNING: Relatively high computational cost detected, processing time expected to be increased")
+        time.sleep(1)
+        broadcast_message("[][][]WARNING: Relatively high computational cost detected, processing time expected to be increased")
     target_type = initial_type_prediction(y)
 
+
     #model training
-    socketio.emit("log", "Starting initial model training...")
+    time.sleep(1)
+    broadcast_message("Starting initial model training")
     best_model = None
     #initial run with initial cross-validation score
     best_model, model_type, model_name, score = modeling(X, y, target_type)
-    print(f"\nType: {model_type} | Mode; Name: {model_name} | score: {score}\n")
+    time.sleep(1)
+    broadcast_message(f"\nType: {model_type} | Mode; Name: {model_name} | score: {score}\n")
     
     #feature selection
     
     if high_dimensionality:
         temp_dataset = X.copy()
-        print("Testing quick removal techniques to mitigate number of columns")    
-        socketio.emit("log", "Testing quick removal techniques to mitigate number of columns")
+        time.sleep(1)
+        broadcast_message("Testing quick removal techniques to mitigate number of columns")    
         b4 = len(X.columns)
+        time.sleep(1)
+        broadcast_message(f"Number of features before selection: {len(X.columns)}")
         print(f"Number of features before selection: {len(X.columns)}")
         fast_selection(temp_dataset, y, target_type)
-        print(f"Number of feature after selection: {len(X.columns)}")
+        time.sleep(1)
+        broadcast_message(f"Number of feature after selection: {len(X.columns)}")
+        print((f"Number of feature after selection: {len(temp_dataset.columns)}"))
         aftr = len(temp_dataset.columns)
-        new_model, new_model_type, new_model_name, new_score = modeling(X, y, target_type)
-        print(f"\nType: {new_model_type} | Mode; Name: {new_model_name} | score: {new_score}\n")
-        print("Comparing performance metrics...")
-        
+        new_model, new_model_type, new_model_name, new_score = modeling(temp_dataset, y, target_type)
+        time.sleep(1)
+        broadcast_message(f"\nType: {new_model_type} | Mode; Name: {new_model_name} | score: {new_score}\n")
+        time.sleep(1)
+        broadcast_message("Comparing performance metrics...")
         #scoring based on number removed and improvement or lack of improvement
         number_removed_score = b4-aftr/b4
         score_difference = -(score - new_score)
-
         if number_removed_score + score_difference <= 0:
-            print("evauation failed, keeping old parameters...")
+            time.sleep(1)
+            broadcast_message("evauation failed, keeping old parameters...")
         else:
-            print("evaluation successful, new parameters set")
+            time.sleep(1)
+            broadcast_message("evaluation successful, new parameters set")
             X = temp_dataset
             best_model = new_model
-    """
-
-#MAKING IT A WEBAPP
-
-from flask import Flask, render_template
-from flask_wtf import FlaskForm
-from wtforms import FileField, SubmitField
-from werkzeug.utils import secure_filename
-from pathlib import Path
-import os
-from flask_socketio import SocketIO
-import time
-import eventlet
-eventlet.monkey_patch()
-
-app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
-
-app.config['SECRET_KEY'] = 'supersecretkey'
-app.config['UPLOAD_FILE'] = 'raw_data'
 
 class UploadFileForm(FlaskForm):
     file = FileField("File")
     submit = SubmitField("Upload File")
-
-def fake_fake_training():
-    socketio.emit("log", "testing new training tech")
-
-def fake_training():
-    socketio.emit("log", "Starting training...", broadcast = True)
-    #fake_fake_training()
-    for i in range(1, 11):
-        socketio.sleep(1)
-        socketio.emit("log", f"Epoch {i}/10 complete", broadcast = True)
-        socketio.emit("progress", i * 10, broadcast = True)
     
-    socketio.emit("log", "Training complete!", broadcast = True)
-    socketio.emit("done", {"message": "Model ready"}, broadcast = True)
-
 @app.route('/', methods = ['GET', 'POST'])
 @app.route('/home', methods = ['GET', 'POST'])
 def home():
     form = UploadFileForm()
-    string_output = ""
+    submitted = False
     if form.validate_on_submit():
-        socketio.start_background_task(fake_training)
         #check if a file exists in the folder already- if it does, we need to delete it
         folder = Path(app.config['UPLOAD_FILE'])
         has_file = any(item.is_file() for item in folder.iterdir())
         if not has_file:
             file = form.file.data
             file.save(os.path.join(os.path.abspath(os.path.dirname(__file__)),app.config['UPLOAD_FILE'], secure_filename(file.filename)))
-            string_output = "File has been uploaded"
+            #broadcast_message("File has been uploaded")
         else:
             delete_string = ""
             #delete files
@@ -535,9 +523,9 @@ def home():
                 item.unlink()
             file = form.file.data
             file.save(os.path.join(os.path.abspath(os.path.dirname(__file__)),app.config['UPLOAD_FILE'], secure_filename(file.filename)))
-            string_output =  f"File has been uploaded ~ Deleted files: {delete_string}"
-    return render_template('index.html', form = form, string_output = string_output)
-
+            #broadcast_message(f"File has been uploaded ~ Deleted files: {delete_string}")
+        socketio.start_background_task(fit)
+    return render_template('index.html', form = form)
 
 if __name__ == '__main__':
-    socketio.run(app, debug = True)
+    socketio.run(app,debug = True)
