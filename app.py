@@ -50,7 +50,7 @@ class feature_metadata:
         self.name = feature_name
         self.type = None
         self.description = None
-        self.key = None
+        self.categorical_type = None
 
     def show_metadata(self):
         print("[]------------------------------------------------[]")
@@ -433,6 +433,14 @@ def print_metadata():
         METADATA[feature].show_metadata()
     print("==========================================")
 
+def determine_encoding(data):
+    #the idea here is that we need to save all the categorical metadata...
+    for feat in data.columns:
+        if METADATA[feat].type == 'categorical':
+            #now we need to determine what type of categorical- so we should save this when it happens.
+            return
+    return
+
 def fit():  
     #load dataset 
     csv_data = load_data()
@@ -507,6 +515,10 @@ def fit():
 
         time.sleep(1)
         broadcast_message(f"\nFinal model | Type: {model_type} | Model Name: {model_name} | score: {score}\n")
+
+        #the idea now is that we need to make this model usable. Which means we need to update the page and save metadata information.
+
+
 
 class UploadFileForm(FlaskForm):
     file = FileField("File")
