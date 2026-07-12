@@ -1,78 +1,42 @@
-import eventlet
-eventlet.monkey_patch()
-
-#MAKING IT A WEBAPP
-
-from flask import Flask, render_template
-from flask_wtf import FlaskForm
-from wtforms import FileField, SubmitField
-from werkzeug.utils import secure_filename
-from pathlib import Path
-from flask_socketio import SocketIO
 import os
-import time
-
-app = Flask(__name__)
-app.config['SECRET_KEY'] = 'supersecretkey'
-app.config['UPLOAD_FILE'] = 'raw_data'
-socketio = SocketIO(app, cors_allowed_origins="*")
-
-
 import pandas as pd
-import os
 import numpy as np
 from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
 from scipy.stats import pearsonr
 from scipy.stats import chi2_contingency
-from tqdm import tqdm
+from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.model_selection import cross_validate
+from datetime import datetime
 
-def broadcast_message(text):
-    text = "chenyu@chenyuzheng: " + text
-    socketio.emit('server_message', {'data':text})
-
-class broadcast_tqdm(tqdm):
-    def display(self, msg = None, pos = None):
-        super().display(msg, pos)
-        pct = (self.n / self.total) * 100 if self.total else 0
-        broadcast_message(f"{pct:.0f}% completed")
-
-        
-#I need to be able to tell the user what kind of inputs to enter...
-class artifact:
-    def __init__(self):
-        metadata = None
-        model = None
-        features = None
-        encoding = None
+# GLOBAL VALUES
 
 class feature_metadata:
     def __init__(self, feature_name):
         self.name = feature_name
         self.type = None
-        self.description = None
         self.categorical_type = None
+        self.mi_score = None
 
-    def show_metadata(self):
-        print("[]------------------------------------------------[]")
-        print(f"feature name: {self.name}\nfeature type: {self.type}")
-        print("[]------------------------------------------------[]")
-        return
-
-def LOAD_MANUAL_OVERRIDE():
+def LOAD_MANUAL_OVERRIDE_TOKENS():
     override_file = open("MANUAL_OVERRIDE_FILE.txt")
     tokens = override_file.read().split()
     return tokens
 
-# GLOBAL VALUES
 GARBAGE_TOKENS = ['?', 'NA', 'N/A', 'null', 'None', 'nan', 'NaN', '']
 REMOVED_FEATURES = {}
 PREDEFINED_REMOVE_FLAGS = ['name', 'time', 'id', 'jersey']
-MANUAL_OVERRIDE_TOKENS = LOAD_MANUAL_OVERRIDE()
+MANUAL_OVERRIDE_TOKENS = LOAD_MANUAL_OVERRIDE_TOKENS()
 #feature metadata idea
 METADATA = {}
 
+#------------------------BROADCAST-----------------------#
 
-#-------------------------------------------- BACKEND --------------------------------------#
+def get_time():
+    return datetime.now().strftime("%I:%M:%S %p")
+
+#------------------------LOADING DATA-----------------------#
 
 class ManyFilesError(Exception):
     """Too many files within a single folder"""
@@ -98,452 +62,308 @@ def load_data():
             raise ManyFilesError("Only one file in the folder at a time")
     return dataframe
 
-def target_categorical_preprocessing(target_column):
-    try:
-        target_column, _ = target_column.factorize()
-        return target_column
-    except Exception as e:
-        print(f"Error converting target column to integer value")
+#------------------------STATISTICAL TOOLS-----------------------#
 
-def normalization(dataframe, feature):
-    series = dataframe[feature]
+def data_normalization(data, feature):
 
-    min_val = series.min()
-    max_val = series.max()
+    #filling empty values appropriately
+    data[feature] = pd.to_numeric(data[feature], errors = 'coerce')
+    skew = data[feature].skew()
+    if abs(skew) > 0.5:
+        data[feature] = data[feature].fillna(data[feature].median())
+    else:
+        data[feature] = data[feature].fillna(data[feature].mean())
+    
+    #normalization
+    min_val = data[feature].min()
+    max_val = data[feature].max()
 
     if min_val == max_val:
-        dataframe[feature] = 0.0
+        data[feature] = 0.0
         return
+    
+    data[feature] = (data[feature] - min_val) / (max_val - min_val)
+    data[feature] = data[feature].astype(float)
 
-    dataframe[feature] = (series - min_val) / (max_val - min_val)
+def encode_categorical(data, feature):
 
-def test_variance(X, feature_name):
-    if X[feature_name].var() < 0.01:
-        X.drop(columns = [feature_name], inplace = True)
+    cardinality = data[feature].nunique()
+    
+    if cardinality == 1:
+        data.drop(columns = feature, inplace = True)
+
+    #binary encoding
+    elif cardinality == 2:
+        METADATA[feature].categoricaltype = "binary"
+        data[feature], _ = data[feature].factorize()
+    
+    #hot-one encoding
+    elif cardinality > 2 and cardinality < 100:
+        old_columns = set(data.columns)
+        one_hot = pd.get_dummies(data, columns = [feature], dtype = int)
+        new_columns = set(one_hot) - old_columns
+        METADATA.pop(feature)
+        for col in new_columns:
+            current_feature_metadata = feature_metadata(col)
+            current_feature_metadata.type = "categorical"
+            current_feature_metadata.categorical_type = "binary_one_hot"
+            METADATA[col] = current_feature_metadata
+        return one_hot
+    
+    #frequency encoding
+    else:
+        METADATA[feature].categoricaltype = "frequency"
+        freq_map = data[feature].value_counts(normalize = True).to_dict()
+        data[feature] = data[feature].map(freq_map)
+    
+    return data
+
+#------------------------INITAL ENCODING OF DATA------------------------#
+
+#helper functions
+def usability(data, feature):
+    #initial tests
+    if feature in MANUAL_OVERRIDE_TOKENS:
+        return True
+    if feature in GARBAGE_TOKENS:
+        REMOVED_FEATURES[feature] = "empty feature name, please label"
+    
+    #testing missingness
+    total_entries = data[feature].notnull().sum()
+    missing_values = data[feature].isna().sum()
+    if missing_values/total_entries > .5:
+        REMOVED_FEATURES[feature] = "feature missing more than half of its values"
+        return False
+    
+    #semantic removal with commonly low info features
+    for remove_flag in PREDEFINED_REMOVE_FLAGS:
+        if remove_flag in feature and remove_flag not in MANUAL_OVERRIDE_TOKENS:
+            REMOVED_FEATURES[feature] = "feature is predetermined to be unreliable"
+            return False
+    
+    #removal of mixed data types (strings and ints)
+    numeric_count = pd.to_numeric(data[feature], errors = 'coerce').notnull().sum()
+    ratio = numeric_count/total_entries
+    if ratio < 1.0 and ratio > 0.0:
+        REMOVED_FEATURES[feature] = "feature has mixed types"
+        return False
+
+    return True
+def type_prediction(column_data):
+    temp = pd.to_numeric(column_data, errors = 'coerce')
+    number_ratio = temp.notna().mean()
+    
+    #not all numerical
+    if number_ratio != 1.0:
+        return 'categorical'
+    
+    #finding decimals to determine continuous data
+    if(temp%1 != 0).any():
+        return 'continuous'
+
+    #now it is more ambiguous, we perform a cardinality check to determine if we could have numerical representations of categories
+    total_entries = column_data.notnull().sum()
+    if temp.nunique()/total_entries > 0.9:
+        return 'continuous'
+    return 'categorical'
+
+#main function
+def encode(data):
+    for feature in data.columns:
+        data[feature] = data[feature].astype(str).str.strip()
+        data[feature] = data[feature].replace(GARBAGE_TOKENS, np.nan)
+
+        #unusable features are removed
+        if not usability(data, feature):
+            data.drop(columns = feature, inplace = True)
+            continue
+
+        #create metadata for a feature if we are using it
+        current_feature_metadata = feature_metadata(feature)
+        METADATA[feature] = current_feature_metadata
+
+        if type_prediction(data[feature]) == 'continuous':
+            METADATA[feature].type = "continuous"
+            data_normalization(data, feature)
+        else:
+            METADATA[feature].type = "categorical"
+            data = encode_categorical(data, feature)
+
+    return data
+
+#------------------------INITIAL FEATURE SELECTION-----------------------#
+
+def MI_categorization(data, outcomes, outcome_type):
+    #generate random column
+    data["random_noise"] = np.random.randn(len(data))
+    is_discrete = data.dtypes == int
+    mutual_info_scores = None
+
+    if outcome_type == "continuous":
+        mutual_info_scores = mutual_info_regression(data, outcomes, discrete_features = is_discrete)
+    else:
+        mutual_info_scores = mutual_info_classif(data, outcomes, discrete_features = is_discrete)
+    
+    mutual_info_scores  = pd.Series(mutual_info_scores, index = data.columns, name = "mutual_info")
+    mutual_info_scores = mutual_info_scores.sort_values(ascending = False)
+    threshold = mutual_info_scores["random_noise"]
+    kept_features = mutual_info_scores[mutual_info_scores>threshold].index.tolist()
+    data.drop(columns = ["random_noise"], inplace = True)
+
+    return kept_features
+
+def variance_test(data, feature_name):
+    if data[feature_name].var() < 0.01:
+        data.drop(columns = [feature_name], inplace = True)
         REMOVED_FEATURES[feature_name] = "below variance threshold"
         METADATA.pop(feature_name)
-        #true for removed
         return True
     return False
 
-def test_correlation(X, feature_name):
-    #greedy approach- remove any feature that has a high correlation value associated with our current feature
-    for feature in tqdm(X.columns, desc = f"correlation test using {feature_name}"):
-        #print(f"testing between {feature_name} and {feature}")
-        if METADATA[feature].type == "continuous" and feature != feature_name:
-            current_feature_data = X[feature_name]
-            comparison_feature_data = X[feature]
+def correlation_test(data, feature_name):
+    for feature in data.columns:
+        if METADATA.type == "continuous" and feature != feature_name and feature not in MANUAL_OVERRIDE_TOKENS:
+            current_feature_data = data[feature_name]
+            comparison_feature_data = data[feature]
             corr, p_val = pearsonr(current_feature_data, comparison_feature_data)
-            #high correlation
             if corr >= 0.85:
-                #print(f"removed {feature}")
-                X.drop(columns = [feature], inplace = True)
-                REMOVED_FEATURES[feature] = f"high correlation to {feature_name}, corr_value of {corr}"
+                data.drop(columns = [feature], inplace = True)
+                REMOVED_FEATURES[feature] = f"high correlation to {feature_name}, correlation value of {corr}"
                 METADATA.pop(feature)
 
-def test_chi_square(X, feature_name):
-    for feature in tqdm(X.columns, desc = f"Chi-square test using {feature_name}"):
-        if METADATA[feature].type == "categorical" and feature != feature_name:
-            current_feature_data = X[feature_name]
-            comparison_feature_data = X[feature]
+def chi_square_test(data, feature_name):
+    for feature in data.columns:
+        if METADATA[feature].type == "categorical" and feature != feature_name and feature not in MANUAL_OVERRIDE_TOKENS:
+            current_feature_data = data[feature_name]
+            comparison_feature_data = data[feature]
             contingency_table = pd.crosstab(current_feature_data, comparison_feature_data)
             chi_2, p_val, dof, expected = chi2_contingency(contingency_table)
 
             if p_val > 0.05:
-                X.drop(columns = [feature], inplace = True)
-                REMOVED_FEATURES[feature] = f"high p_val for chi2 contingency to {feature_name}, likely dependency {p_val}"
+                data.drop(columns = [feature], inplace = True)
+                REMOVED_FEATURES[feature] = f"high p_val for chi2 contingency to {feature_name}, p value of: {p_val}"
                 METADATA.pop(feature)
-    return
 
-#if there is a high MI value for a single feature, we want to keep it.
-def MI_categorization(X, y, type):
-    time.sleep(1)
-    broadcast_message("Running mutual information test...")
-    print("Running mutual information test...")
-    X["random_noise"] = np.random.randn(len(X))
-    is_discrete = X.dtypes == int
-    mi = None
-    if type == "continuous":
-        mi = mutual_info_regression(X, y, discrete_features = is_discrete)
-    else:
-        mi = mutual_info_classif(X, y, discrete_features = is_discrete)
-    
-    mi = pd.Series(mi, index = X.columns, name = "mutual_info")
-    mi = mi.sort_values(ascending = False)
-    threshold = mi["random_noise"]
-    good_features = mi[mi>threshold].index.tolist()
-    X.drop(columns = ["random_noise"], inplace = True)
-    return good_features
+def fast_select(data, outcomes, outcome_type):
 
-def fast_selection(X, y, type):
+    print(f"{get_time()}: Running mutual info test...")
+    high_mi_features = MI_categorization(data, outcomes, outcome_type)
 
-    good_features = MI_categorization(X, y, type)
-
-    time.sleep(1)
-    broadcast_message("Running feature evaluation")
-
-    for feature in X.columns:
-        if feature in good_features:
+    print(f"{get_time()}: Running variance, correlation test on continuous features and chi2 on categorical...")
+    for feature in data.columns:
+        if feature in high_mi_features or feature in MANUAL_OVERRIDE_TOKENS:
             continue
-
-        #test both for variance
-        if feature in REMOVED_FEATURES:
+        #this may seem wrong- but the reason why it needs to be here is because
+        #when this code runs initially, it will delete anything it deems fit as it
+        #iterates through, it may even delete more than one in a single run
+        #so we just keep track of what it deletes so it doesn't try to delete it again
+        elif feature in REMOVED_FEATURES:
             continue
-
-        if test_variance(X, feature):
+        elif variance_test(data, feature):
             continue
-
+        
         if METADATA[feature].type == "continuous":
-            #test correlation
-            test_correlation(X, feature)
+            correlation_test(data, feature)
         elif METADATA[feature].type == "categorical":
-            test_chi_square(X, feature)       
+            chi_square_test(data, feature)
 
-def evaulation(models, X, y, type):
-    from sklearn.model_selection import cross_validate
+#------------------------MODELING FUNCTIONS------------------------#
+
+def modeling(data, outcomes, outcomes_type):
+    models = {}
+    model_type = None
+    if outcomes_type == "continuous":
+        outcomes = pd.to_numeric(outcomes, errors = 'coerce')
+        models = {
+            "Linear Regression": LinearRegression(),
+            "Regressor Decision Tree": DecisionTreeRegressor(),
+            "Regressor Random Forest": RandomForestRegressor(max_depth = 20, n_estimators = 25)
+        }
+        model_type = "Regression"
+    else:
+        outcomes, _ = outcomes.factorize()
+        models = {
+            "Logistic Regression": LogisticRegression(),
+            "Decision Tree": DecisionTreeClassifier(),
+            "Radnom Forest": RandomForestClassifier
+        }
+        model_type = "Classification"
+    
+    print(f"{get_time()}: Model Type Selected: {model_type}... Evaluating individual models")
 
     best_model = None
-    best_name = None
-    best_score = -np.inf
+    score = -np.inf
+    model_name = None
 
-    for name, model, in broadcast_tqdm(models.items(), desc = "Evaluating Models"):
-        time.sleep(.1)
-
-        if type == "categorical":
+    for name, model, in models.items():
+        print(f"{get_time()}: Evaluating {name}")
+        if outcomes_type == "categorical":
             results = cross_validate(
                 model,
-                X,
-                y,
+                data,
+                outcomes,
                 cv = 5,
                 scoring = ["accuracy", "f1"]
             )
 
-            accuracy = results["test_accuracy"].mean()
+            accuracy = results["text_accuracy"].mean()
             f1 = results["test_f1"].mean()
-
-            time.sleep(1)
-            broadcast_message(f"\n{name}")
-            time.sleep(1)
-            broadcast_message(f"Accuracy:{accuracy:.4f}")
-            time.sleep(1)
-            broadcast_message(f"F1 Score: {f1:.4f}\n")
-
-            score = f1
+            print(f"\n{name} | Accuracy: {accuracy:.4f} | F1 Score: {f1:.4f}\n")
+            if f1 > score:
+                best_model = model
+                model_name = name
+                score = f1
         else:
-
             results = cross_validate(
                 model,
-                X,
-                y,
+                data,
+                outcomes,
                 cv = 5,
                 scoring = ["r2", "neg_mean_squared_error"]
             )
 
             r2 = results["test_r2"].mean()
             mse = -results["test_neg_mean_squared_error"].mean()
+            print(f"\n{name} | R^2: {r2:.4f} | MSE: {mse:.4f}\n")
 
-            time.sleep(1)
-            broadcast_message(f"\n{name}")
-            time.sleep(1)
-            broadcast_message(f"R^2: {r2:.4f}")
-            time.sleep(1)
-            broadcast_message(f"MSE: {mse:.4f}\n")
+            if r2 > score:
+                best_model = model
+                model_name = name
+                score = r2
+    return best_model, model_name, score
 
-            score = r2
-        
-        if score > best_score:
-            best_score = score
-            best_model = model
-            best_name = name
+#------------------------BACKEND PIPELINE------------------------#
+
+def pipeline(raw_data, target_column):
     
-    return best_model, best_name, best_score
+    raw_data[target_column] = raw_data[target_column].astype(str).str.strip()
+    raw_data[target_column] = raw_data[target_column].replace(GARBAGE_TOKENS, np.nan)
+    raw_data.dropna(subset = [target_column])
+    outcomes = raw_data.pop(target_column)
 
-def modeling(X, y, type):
-    from sklearn.linear_model import LinearRegression, LogisticRegression
-    from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
-    from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-    from sklearn.model_selection import cross_val_score
+    print(f"{get_time()}: Performing data encoding and normalization")
+    data = encode(raw_data)
 
-    models = {}
-    type_of_model = None
-
-    if type == "continuous":
-        #we train regression models for a continuous target
-        #ensure numeric values
-        y = pd.to_numeric(y, errors = 'coerce')
-        models = {
-            "Linear Regression": LinearRegression(),
-            "Regressor Decision Tree": DecisionTreeRegressor(),
-            #limiting so it's not too in-depth for minimal performance improvement
-            "Regressor Random Forest": RandomForestRegressor(max_depth = 20, n_estimators= 25)
-        }
-        type_of_model = "regression"
-    else:
-        y = target_categorical_preprocessing(y)
-        models = {
-            "Logistic Regression": LogisticRegression(),
-            "Decision Tree": DecisionTreeClassifier(),
-            "Random Forest": RandomForestClassifier()
-        }
-        type_of_model = "classification"
-    
-    best_model = None
-    score = None
-    model_name = None
-    try:
-        best_model, model_name, score = evaulation(models, X, y, type)
-    except Exception as e:
-        print(f"Error evaluating models: {e}")
-
-    return best_model, type_of_model, model_name, score
-
-# I need to define a usability function properly- it needs to check to see if there are any values that are unusuable in a categorical or continuous feature
-def usability(data, feature_name):
-
-    if feature_name in MANUAL_OVERRIDE_TOKENS:
-        return True
-
-    #if there is no real metadata, we can do nothing with the information realistically
-    if feature_name in GARBAGE_TOKENS:
-        REMOVED_FEATURES[feature_name] = "feature has data not correlated to label"
-        return False;
-    
-    #high missingness...
-    missing_values = data[feature_name].isna().sum()
-    if missing_values / len(data) > .5:
-        REMOVED_FEATURES[feature_name] = "feature has too many missing values"
-        return False
-
-    #we don't want to use datetime or id for a learning model for now. whole different type of data that needs to be parsed in a new way
-    for rfn in PREDEFINED_REMOVE_FLAGS:
-        if rfn in feature_name and rfn not in MANUAL_OVERRIDE_TOKENS:
-            REMOVED_FEATURES[feature_name] = "feautre is predetermined to be unreliable"
-            return False
-
-    total_entries = data[feature_name].notnull().sum()
-    #no mixed types within the same column, too difficult to parse at this moment.
-    numeric_count = pd.to_numeric(data[feature_name], errors = 'coerce').notnull().sum()
-    ratio = numeric_count/total_entries
-    if ratio < 1.0 and ratio > 0.0:
-        REMOVED_FEATURES[feature_name] = "feature has mixed types ~ likely inconclusive or muddled result from machine evaluation alone"
-        return False
-    
-    return True
-
-#determine type is going to be a lot harder than I initially think
-def initial_type_prediction(series):
-    #the idea is that if this number_check comes out as anything other than 1.0 as a ratio, then there are strings
-    temp = pd.to_numeric(series, errors = 'coerce')
-    number_ratio = temp.notna().mean()
-    #this is pretty much the only guaranteed way I have a categorical output
-    if number_ratio != 1.0:
-        #it's strings so there's no chance of numerical outputs... in theory
-        return 'categorical'
-    #not even a guarantee in this scenario.
-    #finding decimals
-    if (temp%1 != 0).any():
-        return 'continuous'
-    #no string, only integers, which means it could be categorical or not...
-    total_count = series.notnull().sum()
-    #cardinality check- in theory if we have a lot of categories then it should be continuous most likely
-    if temp.nunique()/total_count > 0.9:
-        return 'continuous'
-    return 'categorical'
-
-def encode_categorical(data, feature):
-    #in this function we need to be able to modify the categorical values to be readable to a machine learning algorithm.
-    #in order to do this, we just need to know the cardinality first
-    cardinality = data[feature].nunique()
-    if cardinality == 1:
-        #only one unique value, meaning there is likely no real important information to gain
-        data.drop(columns = feature, inplace = True)
-        REMOVED_FEATURES[feature] = 'cardinality of 1, no unique values'
-    elif cardinality == 2:
-        #binary encoding
-        data[feature], _ = data[feature].factorize()
-    elif cardinality > 2 and cardinality < 100:
-        #one-hot encoding
-        METADATA[feature].categoricaltype = "one-hot"
-        old_columns = set(data.columns)
-        one_hot = pd.get_dummies(data, columns = [feature], dtype = int)
-        new_columns = set(one_hot) - old_columns
-        METADATA.pop(feature)
-        for col in new_columns:
-            #special categorical type so we can modify input parameters accordingly
-            METADATA[col].categoricaltype = "binary one-hot"
-            metadata = feature_metadata(col)
-            metadata.type = "categorical"
-            METADATA[col] = metadata
-        return one_hot
-    else:
-        #for very large values, we will use frequency encoding 
-        METADATA[feature].categoricaltype = "frequency"
-        freq_map = data[feature].value_counts(normalize = True).to_dict()
-        data[feature] = data[feature].map(freq_map)
-    return data
-
-def continuous_data_normalization(data, feature):
-    data[feature] = pd.to_numeric(data[feature], errors = 'coerce')
-    skew = data[feature].skew()
-    if abs(skew) > 0.5:
-        data[feature] = data[feature].fillna(data[feature].median())
-    else:
-        data[feature] = data[feature].fillna(data[feature].mean())    
-    normalization(data, feature)
-
-#initially cleaning the data and categorizing the features based on their immediate declarations through defined metadata
-def initial_clean(data):
-    count = 0
-    total = len(data.columns)
-
-    for feature in broadcast_tqdm(data.columns, desc = "Cleaning Data"):
-        time.sleep(.1)
-        #get rid of garbage tokens, replace with nan values if they exist
-        data[feature] = data[feature].astype(str).str.strip()
-        data[feature] = data[feature].replace(GARBAGE_TOKENS, np.nan)
-        
-        #test to see if the feature is usable
-        if not usability(data, feature):
-            data.drop(columns = feature, inplace = True)
-            continue
-        
-        metadata = feature_metadata(feature)
-        METADATA[feature] = metadata
-
-        #determine whether it is categorical or continuous
-        if initial_type_prediction(data[feature]) == 'continuous':
-            #continuous
-            METADATA[feature].type = "continuous"
-            continuous_data_normalization(data, feature)
-        else:
-            #categorical
-            METADATA[feature].type = "categorical"
-            data = encode_categorical(data, feature)
-        #METADATA[feature].show_metadata()
-        count += 1
-    return data
-
-#predefined print for removed data- properly formatted
-def print_removed():
-    print("==========================================")
-    for feature in REMOVED_FEATURES:
-        print(f"[XXX]REMOVED: {feature}\nREASON: {REMOVED_FEATURES[feature]}\n")
-    print("==========================================")
-    return
-
-def print_metadata():
-    print("==========================================")
-    for feature in METADATA:
-        METADATA[feature].show_metadata()
-    print("==========================================")
-
-def fit():  
-    #load dataset 
-    csv_data = load_data()
-    target_column = "performance_score"
-    X = csv_data.copy()
-    #get rid of all nan values
-    X[target_column] = X[target_column].astype(str).str.strip()
-    X[target_column] = X[target_column].replace(GARBAGE_TOKENS, np.nan)
-    X.dropna(subset = [target_column])
-    y = X.pop(target_column)
-
-    time.sleep(1)
-    broadcast_message("Data Uploaded- Cleaning...")
-
-    #cleaning
-    X = initial_clean(X)
-    p = X.shape[1]
-    n = X.shape[0]
+    p = data.shape[1]
+    n = data.shape[0]
     ratio = p/n
-    print(ratio)
-    high_dimensionality = (p > 300) or (ratio > .01)
+    high_dimensionality = (p > 300) or (ratio > 0.01)
     if high_dimensionality:
-        print("[][][]WARNING: Relatively high computational cost detected, processing time expected to be increased")
-        time.sleep(1)
-        broadcast_message("[][][]WARNING: Relatively high computational cost detected, processing time expected to be increased")
-    target_type = initial_type_prediction(y)
-
-
-    #model training
-    time.sleep(1)
-    broadcast_message("Starting initial model training")
-    best_model = None
-    #initial run with initial cross-validation score
-    best_model, model_type, model_name, score = modeling(X, y, target_type)
-    time.sleep(1)
-    broadcast_message(f"\nType: {model_type} | Model Name: {model_name} | score: {score}\n")
+        print(f"{get_time()}: High dimensionality detected ~ Expect longer processing time...")
     
-    #feature selection
+    #get the type of the target for model selection
+    outcomes_type = type_prediction(outcomes)
+
+    print(f"{get_time()}: Running basic feature selection")
+    fast_select(data, outcomes, outcomes_type)
+
     
-    if high_dimensionality:
-        temp_dataset = X.copy()
-        time.sleep(1)
-        broadcast_message("Testing quick removal techniques to mitigate number of columns")    
-        b4 = len(X.columns)
-        time.sleep(1)
-        broadcast_message(f"Number of features before selection: {len(X.columns)}")
-        print(f"Number of features before selection: {len(X.columns)}")
-        fast_selection(temp_dataset, y, target_type)
-        time.sleep(1)
-        broadcast_message(f"Number of feature after selection: {len(temp_dataset.columns)}")
-        print((f"Number of feature after selection: {len(temp_dataset.columns)}"))
-        aftr = len(temp_dataset.columns)
-        new_model, new_model_type, new_model_name, new_score = modeling(temp_dataset, y, target_type)
-        time.sleep(1)
-        broadcast_message(f"\nType: {new_model_type} | Model Name: {new_model_name} | score: {new_score}\n")
-        time.sleep(1)
-        broadcast_message("Comparing performance metrics...")
-        #scoring based on number removed and improvement or lack of improvement
-        number_removed_score = b4-aftr/b4
-        score_difference = -(score - new_score)
-        if number_removed_score + score_difference <= 0:
-            time.sleep(1)
-            broadcast_message("evauation failed, keeping old parameters...")
-        else:
-            time.sleep(1)
-            broadcast_message("evaluation successful, new parameters set")
-            X = temp_dataset
-            best_model = new_model
-            model_type = new_model_type
-            model_name = new_model_name
-            score = new_score
+    print(f"{get_time()}: Running model fit and selection")
+    model, model_name, score = modeling(data, outcomes, outcomes_type)
 
-        time.sleep(1)
-        broadcast_message(f"\nFinal model | Type: {model_type} | Model Name: {model_name} | score: {score}\n")
+    print(f"{get_time()}: Completed, best model is {model_name} with score of {score}")
 
-        #the idea now is that we need to make this model usable. Which means we need to update the page and save metadata information.
+data = load_data()
+target_column = "performance_score"
 
-
-
-class UploadFileForm(FlaskForm):
-    file = FileField("File")
-    submit = SubmitField("Upload File")
-    
-@app.route('/', methods = ['GET', 'POST'])
-@app.route('/home', methods = ['GET', 'POST'])
-def home():
-    form = UploadFileForm()
-    submitted = False
-    if form.validate_on_submit():
-        #check if a file exists in the folder already- if it does, we need to delete it
-        folder = Path(app.config['UPLOAD_FILE'])
-        has_file = any(item.is_file() for item in folder.iterdir())
-        if not has_file:
-            file = form.file.data
-            file.save(os.path.join(os.path.abspath(os.path.dirname(__file__)),app.config['UPLOAD_FILE'], secure_filename(file.filename)))
-            #broadcast_message("File has been uploaded")
-        else:
-            delete_string = ""
-            #delete files
-            for item in folder.iterdir():
-                delete_string = delete_string + f"\ndeleted {item.name}"
-                item.unlink()
-            file = form.file.data
-            file.save(os.path.join(os.path.abspath(os.path.dirname(__file__)),app.config['UPLOAD_FILE'], secure_filename(file.filename)))
-            #broadcast_message(f"File has been uploaded ~ Deleted files: {delete_string}")
-        socketio.start_background_task(fit)
-    return render_template('index.html', form = form)
-
-if __name__ == '__main__':
-    socketio.run(app,debug = True)
+pipeline(data, target_column)
