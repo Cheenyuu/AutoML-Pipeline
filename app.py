@@ -363,17 +363,21 @@ def encode_categorical(data, feature):
         data[feature], _ = data[feature].factorize()
     elif cardinality > 2 and cardinality < 100:
         #one-hot encoding
+        METADATA[feature].categoricaltype = "one-hot"
         old_columns = set(data.columns)
         one_hot = pd.get_dummies(data, columns = [feature], dtype = int)
         new_columns = set(one_hot) - old_columns
         METADATA.pop(feature)
         for col in new_columns:
+            #special categorical type so we can modify input parameters accordingly
+            METADATA[col].categoricaltype = "binary one-hot"
             metadata = feature_metadata(col)
             metadata.type = "categorical"
             METADATA[col] = metadata
         return one_hot
     else:
         #for very large values, we will use frequency encoding 
+        METADATA[feature].categoricaltype = "frequency"
         freq_map = data[feature].value_counts(normalize = True).to_dict()
         data[feature] = data[feature].map(freq_map)
     return data
@@ -432,14 +436,6 @@ def print_metadata():
     for feature in METADATA:
         METADATA[feature].show_metadata()
     print("==========================================")
-
-def determine_encoding(data):
-    #the idea here is that we need to save all the categorical metadata...
-    for feat in data.columns:
-        if METADATA[feat].type == 'categorical':
-            #now we need to determine what type of categorical- so we should save this when it happens.
-            return
-    return
 
 def fit():  
     #load dataset 
