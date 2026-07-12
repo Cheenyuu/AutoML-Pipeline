@@ -1,399 +1,96 @@
-# AutoML Pipeline
+# AutoML Pipeline Project
 
-An end-to-end Automated Machine Learning (AutoML) web application built with **Flask**, **Flask-SocketIO**, and **scikit-learn**. The application accepts a CSV dataset, automatically cleans and preprocesses the data, performs feature engineering and feature selection, evaluates several machine learning models using cross-validation, and selects the best-performing model.
+---
 
-The project is designed to minimize manual preprocessing while still producing interpretable results through a transparent pipeline.
+A basic machine learning project that employs the use of statistical analysis tools and machine learning to get useful information about large data.
 
 ---
 
 # Features
 
-* Upload datasets through a web interface
-* Automatic data cleaning
-* Automatic feature type detection
+* Live progress updates within terminal
+* Metadata tracking
+* Removed feature tracking
+* Manual override token functionality
+* Upload data and define target values
+* Automatic type detection for dataframe columns
+* Automatic data encoding for categorical and continuous data, optimized for model training
 * Missing value handling
-* Continuous feature normalization
-* Categorical encoding
-* Feature selection
-* Multiple model evaluation
-* Live progress updates through WebSockets
-* Automatic model selection
+* Simple feature selection using variance tests, chi2 tests, correlation tests, and mutual information scores
+* Automatic evalutation of models
+* Automatic selection of models
 
 ---
 
-# Pipeline Overview
+# Pipeline
 
 ```
-CSV Upload
-      │
-      ▼
-Data Validation
-      │
-      ▼
-Automatic Cleaning
-      │
-      ▼
-Feature Type Detection
-      │
-      ▼
-Encoding & Normalization
-      │
-      ▼
-Initial Model Training
-      │
-      ▼
-Feature Selection
-      │
-      ▼
-Retraining
-      │
-      ▼
-Model Comparison
-      │
-      ▼
-Best Model Selected
+    Upload a CSV to raw_data file
+                  |
+                  v
+Specify the target column within the code
+                  |
+                  v
+ Automatic Encoding with Type Detection
+                  |
+                  v
+      Initial Feature Selection
+                  |
+                  v
+    Model Training and Comparison
+                  |
+                  v
+          Model Selection
 ```
-
----
-
-# Data Cleaning
-
-Before any model is trained, every feature is evaluated.
-
-The pipeline automatically:
-
-* Removes unusable columns
-* Removes columns with excessive missing values (>50%)
-* Removes obvious identifier columns (ID, Name, Time, Jersey, etc.)
-* Removes mixed-type columns
-* Converts common missing-value tokens
-
-Supported missing value tokens include:
-
-```
-?
-NA
-N/A
-null
-None
-nan
-NaN
-(blank)
-```
-
----
 
 # Automatic Feature Type Detection
 
-The pipeline attempts to determine whether each feature is **continuous** or **categorical**.
+Pipeline determines whether the feature is continuous or categorical through basic test that involve assessing the columns individually and filtering based on expected *look* through numerical ratios.
 
-### Continuous Detection
+### Continuous
 
 A feature is considered continuous if:
 
-* It contains decimal values
+* Decimal values are involved
 * Most values are unique
-* The feature appears numerical
 
-### Categorical Detection
+### Categorical
 
 A feature is considered categorical if:
 
-* It contains text
-* It contains a small number of unique integer values
-
-This allows datasets without metadata to still be processed automatically.
+* Text is found
+* Small number of repeating integers (likely labels)
 
 ---
 
-# Continuous Feature Processing
+# Encoding and Processing
 
-Continuous variables undergo:
+### Continuous
 
-* Numeric conversion
-* Missing value imputation
+Continuous features are processed using min-max normalization so the magnitude of the numbers do not affect the modeling.
 
-  * Mean (low skew)
-  * Median (high skew)
-* Min-Max normalization
+### Categorical
 
-Normalization formula:
+Categorical data is encoded in order to do two main things:
 
-```
-(x - min) / (max - min)
-```
+* Convert text-represented categories to numerical values
+* Ensure numerically labeled categories are not unfairly weighted based on the magnitude of their label
 
----
-
-# Categorical Feature Processing
-
-Encoding is selected automatically based on cardinality.
-
-### Binary Features
-
-Uses factorization.
-
-Example:
-
-```
-Yes → 0
-No  → 1
-```
-
----
-
-### Low Cardinality (<100)
-
-Uses one-hot encoding.
-
-Example:
-
-```
-Color
-
-↓
-
-Color_Red
-Color_Blue
-Color_Green
-```
-
----
-
-### High Cardinality (≥100)
-
-Uses frequency encoding.
-
-Example:
-
-```
-Country
-
-↓
-
-United States → 0.27
-Canada → 0.05
-Germany → 0.03
-```
-
-This prevents extremely wide datasets caused by one-hot encoding.
+For low cardinality categorical types, we use either binary encoding or one-hot encoding. For high cardinality categorical types, we use frequency encoding to minimize fragmentation and size of the overall dataset.
 
 ---
 
 # Feature Selection
 
-When datasets become high dimensional, additional feature selection is performed.
+We run a quick and comprehensive feature selection in order to remove columns that are unlikely to provide useful information and reduce computational overhead for model evaluation.
 
-A dataset is considered high dimensional when:
+We start by determining mutual information scores between all columns and the outcomes column to determine which features are likely worth keeping. If any feature falls above the threshold, we store it away so it will not be evaluated and will be kept.
 
-* Number of features > 300
-
-or
-
-* Feature/sample ratio exceeds the defined threshold.
-
-The pipeline then applies several automated tests.
+If a feature does not meet the threshold for mutual information, it is tested for its variance measure, its correlation value (continuous features), and its chi2 value (categorical features).
 
 ---
 
-## Mutual Information
+# Feature Removal and Manual Override
 
-A random noise feature is injected into the dataset.
+Features are automatically removed during encoding or during feature selection through a variety of statistical measures. However, users can specify features that they require the code to keep within the MANUAL_OVERRIDE.txt file provided. When starting the code, the program will automatically fetch these tokens before any kind of parsing happens and ensure that these columns remain throughout the entirety of run.
 
-Only features that outperform the random noise feature are kept.
-
-This provides a dynamic threshold instead of relying on manually chosen values.
-
----
-
-## Variance Threshold
-
-Features with extremely low variance are removed.
-
-These features contribute little useful information.
-
----
-
-## Pearson Correlation
-
-Continuous variables are compared using Pearson correlation.
-
-Highly correlated features are removed to reduce redundancy.
-
-Current threshold:
-
-```
-|r| ≥ 0.85
-```
-
----
-
-## Chi-Square Testing
-
-Categorical variables are compared using a Chi-Square contingency test.
-
-Features determined to be statistically redundant may be removed.
-
----
-
-# Supported Models
-
-## Regression
-
-* Linear Regression
-* Decision Tree Regressor
-* Random Forest Regressor
-
-Evaluation metrics:
-
-* R² Score
-* Mean Squared Error
-
----
-
-## Classification
-
-* Logistic Regression
-* Decision Tree
-* Random Forest
-
-Evaluation metrics:
-
-* Accuracy
-* F1 Score
-
-Cross-validation uses 5 folds.
-
-The model with the highest evaluation score is selected automatically.
-
----
-
-# Live Progress Updates
-
-The application uses **Flask-SocketIO** to stream progress updates directly to the browser.
-
-Users receive updates such as:
-
-* Dataset uploaded
-* Cleaning started
-* Mutual information running
-* Model evaluation
-* Feature selection
-* Final model results
-
-This allows long-running jobs to provide real-time feedback instead of appearing frozen.
-
----
-
-# Project Structure
-
-```
-project/
-│
-├── app.py
-├── raw_data/
-├── templates/
-│     └── index.html
-├── static/
-├── MANUAL_OVERRIDE_FILE.txt
-├── README.md
-```
-
----
-
-# Manual Override File
-
-The pipeline supports a manual override file.
-
-```
-MANUAL_OVERRIDE_FILE.txt
-```
-
-Feature names listed in this file bypass automatic removal rules.
-
-This is useful when domain knowledge indicates a feature should be preserved despite automated heuristics.
-
----
-
-# Running the Application
-
-Clone the repository.
-
-```
-git clone https://github.com/yourusername/AutoML-Pipeline.git
-```
-
-Install dependencies.
-
-```
-pip install -r requirements.txt
-```
-
-Run the application.
-
-```
-python app.py
-```
-
-Open your browser.
-
-```
-http://127.0.0.1:5000
-```
-
-Upload a CSV file to begin training.
-
----
-
-# Current Limitations
-
-* Supports one CSV file at a time
-* Target column is currently hardcoded
-* Structured data only
-* No GPU acceleration
-* Limited model library
-* No hyperparameter optimization
-* No model persistence
-* No prediction endpoint
-
----
-
-# Future Improvements
-
-* Automatic target column detection
-* Hyperparameter tuning
-* Feature importance visualization
-* SHAP explanations
-* GPU acceleration
-* Additional models (XGBoost, LightGBM, CatBoost)
-* Automatic train/test splitting strategies
-* Export trained models
-* Prediction API
-* Multi-file dataset merging
-* Support for image and text datasets
-* Pipeline configuration through the web interface
-
----
-
-# Technologies Used
-
-* Python
-* Flask
-* Flask-WTF
-* Flask-SocketIO
-* Eventlet
-* Pandas
-* NumPy
-* SciPy
-* scikit-learn
-* tqdm
-
----
-
-# Design Philosophy
-
-This project focuses on creating an interpretable AutoML pipeline rather than a black-box optimizer.
-
-Instead of hiding preprocessing decisions, each stage of the pipeline performs deterministic, explainable transformations. The goal is to automate repetitive machine learning tasks while keeping every preprocessing and model-selection decision transparent and understandable.
-
-The project is intended as both a practical AutoML tool and an educational framework demonstrating how an automated machine learning workflow can be built from first principles.

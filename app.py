@@ -26,7 +26,7 @@ def LOAD_MANUAL_OVERRIDE_TOKENS():
 
 GARBAGE_TOKENS = ['?', 'NA', 'N/A', 'null', 'None', 'nan', 'NaN', '']
 REMOVED_FEATURES = {}
-PREDEFINED_REMOVE_FLAGS = ['name', 'time', 'id', 'jersey']
+#PREDEFINED_REMOVE_FLAGS = ['name', 'time', 'id', 'jersey']
 MANUAL_OVERRIDE_TOKENS = LOAD_MANUAL_OVERRIDE_TOKENS()
 #feature metadata idea
 METADATA = {}
@@ -104,6 +104,8 @@ def encode_categorical(data, feature):
         new_columns = set(one_hot) - old_columns
         METADATA.pop(feature)
         for col in new_columns:
+            if feature in MANUAL_OVERRIDE_TOKENS:
+                MANUAL_OVERRIDE_TOKENS.append(col)
             current_feature_metadata = feature_metadata(col)
             current_feature_metadata.type = "categorical"
             current_feature_metadata.categorical_type = "binary_one_hot"
@@ -135,12 +137,13 @@ def usability(data, feature):
         REMOVED_FEATURES[feature] = "feature missing more than half of its values"
         return False
     
-    #semantic removal with commonly low info features
-    for remove_flag in PREDEFINED_REMOVE_FLAGS:
+    #semantic removal with commonly low info features REMOVED::REASON:: Became too convoluted and interfered with proper usage of MANUAL OVERRIDE
+    """for remove_flag in PREDEFINED_REMOVE_FLAGS:
         if remove_flag in feature and remove_flag not in MANUAL_OVERRIDE_TOKENS:
             REMOVED_FEATURES[feature] = "feature is predetermined to be unreliable"
             return False
-    
+    """
+
     #removal of mixed data types (strings and ints)
     numeric_count = pd.to_numeric(data[feature], errors = 'coerce').notnull().sum()
     ratio = numeric_count/total_entries
@@ -222,7 +225,7 @@ def variance_test(data, feature_name):
 
 def correlation_test(data, feature_name):
     for feature in data.columns:
-        if METADATA.type == "continuous" and feature != feature_name and feature not in MANUAL_OVERRIDE_TOKENS:
+        if METADATA[feature].type == "continuous" and feature != feature_name and feature not in MANUAL_OVERRIDE_TOKENS:
             current_feature_data = data[feature_name]
             comparison_feature_data = data[feature]
             corr, p_val = pearsonr(current_feature_data, comparison_feature_data)
@@ -357,7 +360,6 @@ def pipeline(raw_data, target_column):
     print(f"{get_time()}: Running basic feature selection")
     fast_select(data, outcomes, outcomes_type)
 
-    
     print(f"{get_time()}: Running model fit and selection")
     model, model_name, score = modeling(data, outcomes, outcomes_type)
 
